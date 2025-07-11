@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { signOut } from 'firebase/auth';
+import { signOut, onAuthStateChanged, User } from 'firebase/auth';
 import { auth, db } from '../services/firebase';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -7,6 +7,7 @@ import {
   addDoc,
   getDocs,
   query,
+  where,
   orderBy,
 } from 'firebase/firestore';
 import {
@@ -20,7 +21,6 @@ import {
   PointElement,
 } from 'chart.js';
 import { Pie, Line } from 'react-chartjs-2';
-import { User, onAuthStateChanged } from 'firebase/auth';
 
 ChartJS.register(
   ArcElement,
@@ -38,6 +38,7 @@ interface Transaction {
   description: string;
   amount: number;
   date: string;
+  uid: string;
 }
 
 const Dashboard: React.FC = () => {
@@ -51,8 +52,11 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      if (currentUser) setUser(currentUser);
-      else navigate('/');
+      if (currentUser) {
+        setUser(currentUser);
+      } else {
+        navigate('/');
+      }
     });
     return unsubscribe;
   }, [navigate]);
@@ -63,7 +67,7 @@ const Dashboard: React.FC = () => {
   };
 
   const handleAddTransaction = async () => {
-    if (!description || !amount) return;
+    if (!description || !amount || !user) return;
 
     const numericAmount = parseFloat(amount.replace(/,/g, ''));
     const newTransaction = {
@@ -71,10 +75,12 @@ const Dashboard: React.FC = () => {
       description,
       amount: type === 'expense' ? -Math.abs(numericAmount) : Math.abs(numericAmount),
       date: new Date().toISOString(),
+      uid: user.uid, // ✅ include uid
     };
 
     const docRef = await addDoc(collection(db, 'transactions'), newTransaction);
     setTransactions((prev) => [{ id: docRef.id, ...newTransaction }, ...prev]);
+
     setDescription('');
     setAmount('');
     setType('income');
@@ -82,17 +88,25 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     const fetchTransactions = async () => {
-      const q = query(collection(db, 'transactions'), orderBy('date', 'asc'));
+      if (!user) return;
+
+      const q = query(
+        collection(db, 'transactions'),
+        where('uid', '==', user.uid),
+        orderBy('date', 'asc')
+      );
+
       const querySnapshot = await getDocs(q);
       const data: Transaction[] = [];
       querySnapshot.forEach((doc) => {
         data.push({ id: doc.id, ...(doc.data() as Omit<Transaction, 'id'>) });
       });
+
       setTransactions(data);
     };
 
     fetchTransactions();
-  }, []);
+  }, [user]);
 
   const sortedTransactions = [...transactions].sort((a, b) => {
     if (sortType === 'date') return new Date(b.date).getTime() - new Date(a.date).getTime();
@@ -121,7 +135,7 @@ const Dashboard: React.FC = () => {
   }
 
   const lineData = {
-    labels: transactions.map((t, index) => index + 1),
+    labels: transactions.map((_, index) => index + 1),
     datasets: [
       {
         label: 'Financial Trend',
@@ -193,12 +207,9 @@ const Dashboard: React.FC = () => {
             placeholder="Amount"
             value={amount}
             onChange={(e) => {
-              const value = e.target.value.replace(/,/g, '');
-              if (!isNaN(Number(value))) {
-                const formatted = Number(value).toLocaleString();
-                setAmount(formatted);
-              } else {
-                setAmount('');
+              const raw = e.target.value.replace(/,/g, '');
+              if (!isNaN(Number(raw))) {
+                setAmount(Number(raw).toLocaleString());
               }
             }}
             className="border px-3 py-2 rounded w-full sm:w-40"
